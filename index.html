@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>マトリックス風背景＋流れるテキスト（同期版）</title>
+
+  <style>
+    body {
+      margin: 0;
+      background: black;
+      overflow: hidden; /* スクロールバーを消す */
+    }
+    #matrixCanvas, #textCanvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      display: block;
+    }
+  </style>
+</head>
+<body>
+
+<!-- Socket.io クライアントの読み込み -->
+<script src="https://cdn.socket.io/4.6.1/socket.io.min.js"></script>
+
+<!-- マトリックス背景用Canvas -->
+<canvas id="matrixCanvas"></canvas>
+
+<!-- 流れる文字表示用Canvas -->
+<canvas id="textCanvas"></canvas>
+
+<script>
+// ====== 基本設定 ======
+const myDisplayIndex = 2;   // ディスプレイ番号を 0,1,2,... と変えてください
+const totalDisplays  = 3;   // 全ディスプレイ枚数
+const canvasWidth  = 1920;  // 画面サイズ(横)
+const canvasHeight = 1080;  // 画面サイズ(縦)
+const scrollSpeed  = 300;   // テキストが流れる速度(px/秒)
+const displayText  = "HAPPY BIRTHDAY TO JUN REKIMOTO          ";
+
+// --- サーバ同期用 ---
+let globalStartTime = null;
+const socket = io("http://100.95.187.119:3000"); // サーバのURLを指定
+socket.on("startTime", (serverTime) => {
+  globalStartTime = serverTime;
+  console.log("サーバから開始時刻を受信:", globalStartTime);
+});
+
+// --- マトリックス背景の設定 ---
+const matrixCanvas = document.getElementById("matrixCanvas");
+const matrixCtx = matrixCanvas.getContext("2d");
+matrixCanvas.width  = canvasWidth;
+matrixCanvas.height = canvasHeight;
+
+const matrixChars = "日ﾊﾐﾋｰｳｼﾅﾓﾆｻﾜﾂｵﾘｱﾎﾃﾏｹﾒｴｶｷﾑﾕﾗｾﾈｽﾀﾇﾍ0123456789:・.";
+const fontSize = 14;
+const columns = Math.floor(canvasWidth / fontSize);
+let drops = new Array(columns).fill(1);
+
+function drawMatrix() {
+  matrixCtx.fillStyle = "rgba(0, 0, 0, 0.05)";
+  matrixCtx.fillRect(0, 0, canvasWidth, canvasHeight);
+
+  matrixCtx.fillStyle = "#0F0";
+  matrixCtx.font = fontSize + "px monospace";
+
+  for (let i = 0; i < drops.length; i++) {
+    const text = matrixChars[Math.floor(Math.random() * matrixChars.length)];
+    matrixCtx.fillText(text, i * fontSize, drops[i] * fontSize);
+
+    if (drops[i] * fontSize > canvasHeight && Math.random() > 0.975) {
+      drops[i] = 0;
+    }
+    drops[i]++;
+  }
+}
+
+// --- テキストスクロール設定 ---
+const textCanvas = document.getElementById("textCanvas");
+const textCtx = textCanvas.getContext("2d");
+textCanvas.width  = canvasWidth;
+textCanvas.height = canvasHeight;
+
+textCtx.font = "200px 'Orbitron', sans-serif";
+textCtx.textBaseline = "middle";
+textCtx.fillStyle    = "#0ff";
+textCtx.shadowColor  = "#ff00ff";
+textCtx.shadowBlur   = 15;
+
+// テキスト幅を測定
+const measureCtx = document.createElement("canvas").getContext("2d");
+measureCtx.font = textCtx.font;
+const textWidth = measureCtx.measureText(displayText).width;
+
+// テキスト間隔 & ループ幅
+const textSpacing = textWidth * 0.5;
+const loopWidth   = textWidth + textSpacing;
+
+// --- アニメーション ---
+function animate() {
+  // 同期用の開始時刻をまだ受信していなければ待つ
+  if (!globalStartTime) {
+    requestAnimationFrame(animate);
+    return;
+  }
+
+  // 経過秒数
+  const now = Date.now();
+  const elapsedSec = (now - globalStartTime) / 1000;
+
+  // 背景(マトリックス)
+  drawMatrix();
+
+  // 前面のテキスト
+  drawScrollingText(elapsedSec);
+
+  requestAnimationFrame(animate);
+}
+
+function drawScrollingText(elapsedSec) {
+  const scrollX = elapsedSec * scrollSpeed;
+  textCtx.clearRect(0, 0, canvasWidth, canvasHeight);
+
+  // このディスプレイのグローバル位置
+  const globalOffset = myDisplayIndex * canvasWidth;
+
+  // ループ計算
+  const shiftMod = scrollX % loopWidth;
+  const baseX = -shiftMod;
+
+  const screenStart = globalOffset;
+  const screenEnd   = globalOffset + canvasWidth;
+
+  const nMin = Math.floor((screenStart - baseX) / loopWidth) - 2;
+  const nMax = Math.ceil((screenEnd   - baseX) / loopWidth) + 2;
+
+  for (let n = nMin; n <= nMax; n++) {
+    const copyGlobalX = baseX + n * loopWidth;
+    const thisCanvasX = copyGlobalX - screenStart;
+    // 画面幅内に多少でも重なれば描画
+    if (thisCanvasX + textWidth > 0 && thisCanvasX < canvasWidth) {
+      textCtx.fillText(displayText, thisCanvasX, canvasHeight / 2);
+    }
+  }
+}
+
+// ====== ここからフルスクリーン自動化のためのコード ======
+/**
+ * ページ読み込み完了時、あるいはユーザー操作でフルスクリーンをリクエストする。
+ * ※ 大半のブラウザでは「自動フルスクリーン」を許可していません。
+ */
+document.addEventListener("DOMContentLoaded", () => {
+  // 1. ユーザー操作なしで自動的にフルスクリーンを試みる
+  //    多くのブラウザでは制限により失敗します。
+  attemptFullscreen();
+
+  // 2. ユーザーがクリックしたら再度フルスクリーンを試みる (保険)
+  document.addEventListener("click", () => {
+    if (!document.fullscreenElement) {
+      attemptFullscreen();
+    }
+  });
+});
+
+function attemptFullscreen() {
+  // HTML全体をフルスクリーン化
+  if (document.documentElement.requestFullscreen) {
+    document.documentElement.requestFullscreen().catch(err => {
+      console.warn("フルスクリーンリクエストがブロックされました: ", err);
+    });
+  }
+}
+
+// アニメーション開始
+requestAnimationFrame(animate);
+</script>
+</body>
+</html>
